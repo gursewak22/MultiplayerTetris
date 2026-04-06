@@ -1,0 +1,347 @@
+mod game;
+mod lobby;
+mod session;
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use futures_util::{SinkExt, StreamExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{mpsc, Mutex};
+use tokio_tungstenite::accept_async;
+use tokio_tungstenite::tungstenite::Message;
+
+use lobby::Lobby;
+use session::GameSession;
+use shared::{ClientMsg, DrawFrame, ServerMsg};
+
+// ---------------------------------------------------------------------------
+// Shared application state
+// ---------------------------------------------------------------------------
+
+type LobbyRef = Arc<Mutex<Lobby>>;
+/// All active game sessions indexed by an incrementing id.
+type Sessions = Arc<Mutex<HashMap<u64, GameSession>>>;
+/// Channel for pushing DrawFrames to the renderer task.
+type RendererTx = Arc<Mutex<Option<mpsc::UnboundedSender<DrawFrame>>>>;
+/// Maps player name → (session_id, player_number) once a game has been assigned.
+type GameAssignments = Arc<Mutex<HashMap<String, (u64, u8)>>>;
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+#[tokio::main]
+async fn main() {
+    let lobby: LobbyRef = Arc::new(Mutex::new(Lobby::new()));
+    let sessions: Sessions = Arc::new(Mutex::new(HashMap::new()));
+    let renderer_tx: RendererTx = Arc::new(Mutex::new(None));
+    let game_assignments: GameAssignments = Arc::new(Mutex::new(HashMap::new()));
+
+    let client_listener = TcpListener::bind("127.0.0.1:9001")
+        .await
+        .expect("Failed to bind :9001");
+    let renderer_listener = TcpListener::bind("127.0.0.1:9002")
+        .await
+        .expect("Failed to bind :9002");
+
+    println!("Server listening — clients on :9001, renderer on :9002");
+
+    // Spawn the tick loop.
+    {
+        let sessions = sessions.clone();
+        let lobby = lobby.clone();
+        let renderer_tx = renderer_tx.clone();
+        tokio::spawn(tick_loop(sessions, lobby, renderer_tx));
+    }
+
+    // Accept renderer connections on :9002.
+    {
+        let renderer_tx = renderer_tx.clone();
+        tokio::spawn(accept_renderer_connections(renderer_listener, renderer_tx));
+    }
+
+    // Accept client connections on :9001.
+    loop {
+        match client_listener.accept().await {
+            Ok((stream, addr)) => {
+                let lobby = lobby.clone();
+                let sessions = sessions.clone();
+                let game_assignments = game_assignments.clone();
+                tokio::spawn(handle_client(stream, addr, lobby, sessions, game_assignments));
+            }
+            Err(e) => {
+                eprintln!("Accept error on :9001: {e}");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Game tick loop (~60 fps)
+// ---------------------------------------------------------------------------
+
+async fn tick_loop(sessions: Sessions, _lobby: LobbyRef, renderer_tx: RendererTx) {
+    let tick_duration = Duration::from_millis(16);
+    let mut last = Instant::now();
+
+    loop {
+        tokio::time::sleep(tick_duration).await;
+        let elapsed = last.elapsed();
+        last = Instant::now();
+        let elapsed_ms = elapsed.as_millis() as u64;
+
+        let mut frames: Vec<DrawFrame> = Vec::new();
+        {
+            let mut sess_map = sessions.lock().await;
+            for session in sess_map.values_mut() {
+                session.tick(elapsed_ms);
+                frames.push(session.to_draw_frame());
+            }
+        }
+
+        // Check for game-over events and update lobby rankings.
+        {
+            let mut sess_map = sessions.lock().await;
+            let mut finished: Vec<u64> = Vec::new();
+            for (&id, session) in sess_map.iter() {
+                if session.game_over.is_some() {
+                    finished.push(id);
+                }
+            }
+            for id in finished {
+                sess_map.remove(&id);
+            }
+        }
+
+        // Push the latest frame to the renderer if connected.
+        if let Some(frame) = frames.into_iter().last() {
+            let tx_guard = renderer_tx.lock().await;
+            if let Some(tx) = tx_guard.as_ref() {
+                let _ = tx.send(frame);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Renderer connection handler
+// ---------------------------------------------------------------------------
+
+async fn accept_renderer_connections(listener: TcpListener, renderer_tx: RendererTx) {
+    loop {
+        match listener.accept().await {
+            Ok((stream, addr)) => {
+                let renderer_tx = renderer_tx.clone();
+                tokio::spawn(handle_renderer_push(stream, addr, renderer_tx));
+            }
+            Err(e) => {
+                eprintln!("Renderer accept error: {e}");
+            }
+        }
+    }
+}
+
+/// Accepts a WebSocket from the renderer process. The server pushes DrawFrames
+/// over this connection; it does not read from it.
+async fn handle_renderer_push(stream: TcpStream, addr: SocketAddr, renderer_tx: RendererTx) {
+    let ws = match accept_async(stream).await {
+        Ok(ws) => ws,
+        Err(e) => {
+            eprintln!("Renderer WS handshake from {addr} failed: {e}");
+            return;
+        }
+    };
+
+    println!("Renderer connected from {addr}");
+
+    let (mut ws_sink, mut ws_stream) = ws.split();
+    let (tx, mut rx) = mpsc::unbounded_channel::<DrawFrame>();
+
+    // Register this as the active renderer sender.
+    {
+        let mut guard = renderer_tx.lock().await;
+        *guard = Some(tx);
+    }
+
+    // Forward frames from the channel to the WebSocket.
+    let forward_task = tokio::spawn(async move {
+        while let Some(frame) = rx.recv().await {
+            let json = match serde_json::to_string(&frame) {
+                Ok(j) => j,
+                Err(e) => {
+                    eprintln!("Serialize DrawFrame error: {e}");
+                    continue;
+                }
+            };
+            if ws_sink.send(Message::Text(json.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Drain any messages sent by the renderer (we don't expect any, but we
+    // must drive the stream to detect disconnection).
+    while let Some(msg) = ws_stream.next().await {
+        match msg {
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+
+    forward_task.abort();
+    println!("Renderer {addr} disconnected");
+
+    // Clear the renderer sender so frames are discarded until reconnection.
+    let mut guard = renderer_tx.lock().await;
+    *guard = None;
+}
+
+// ---------------------------------------------------------------------------
+// Client connection handler
+// ---------------------------------------------------------------------------
+
+async fn handle_client(
+    stream: TcpStream,
+    addr: SocketAddr,
+    lobby: LobbyRef,
+    sessions: Sessions,
+    game_assignments: GameAssignments,
+) {
+    let ws = match accept_async(stream).await {
+        Ok(ws) => ws,
+        Err(e) => {
+            eprintln!("Client WS handshake from {addr} failed: {e}");
+            return;
+        }
+    };
+
+    println!("Client connected from {addr}");
+
+    let (mut ws_sink, mut ws_stream) = ws.split();
+    let (server_tx, mut server_rx) = mpsc::unbounded_channel::<ServerMsg>();
+
+    let mut player_name: Option<String> = None;
+    let mut player_number: u8 = 0;
+    let mut session_id: Option<u64> = None;
+
+    // Task: forward ServerMsg → WebSocket text frames.
+    let send_task = tokio::spawn(async move {
+        while let Some(msg) = server_rx.recv().await {
+            let json = match serde_json::to_string(&msg) {
+                Ok(j) => j,
+                Err(e) => {
+                    eprintln!("Serialize ServerMsg error: {e}");
+                    continue;
+                }
+            };
+            if ws_sink.send(Message::Text(json.into())).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    while let Some(raw) = ws_stream.next().await {
+        let raw = match raw {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("WS recv error from {addr}: {e}");
+                break;
+            }
+        };
+
+        let text = match raw {
+            Message::Text(t) => t,
+            Message::Close(_) => break,
+            _ => continue,
+        };
+
+        let client_msg: ClientMsg = match serde_json::from_str(&text) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Parse ClientMsg from {addr}: {e}");
+                continue;
+            }
+        };
+
+        match client_msg {
+            ClientMsg::JoinLobby { name } => {
+                player_name = Some(name.clone());
+                let mut lob = lobby.lock().await;
+                lob.add_player(name, server_tx.clone());
+            }
+
+            ClientMsg::Challenge { target } => {
+                if let Some(ref name) = player_name {
+                    let mut lob = lobby.lock().await;
+                    lob.handle_challenge(name, &target);
+                }
+            }
+
+            ClientMsg::AcceptChallenge { from } => {
+                if let Some(ref name) = player_name {
+                    let accepted = {
+                        let mut lob = lobby.lock().await;
+                        lob.accept_challenge(name, &from)
+                    };
+                    if accepted {
+                        // Create a new game session.
+                        let new_session = GameSession::new();
+                        let id = {
+                            let mut sess_map = sessions.lock().await;
+                            let id = sess_map.len() as u64;
+                            sess_map.insert(id, new_session);
+                            id
+                        };
+                        // Acceptor is player 1, challenger is player 2.
+                        session_id = Some(id);
+                        player_number = 1;
+                        // Register both players so the challenger's task can look up its assignment.
+                        let mut assignments = game_assignments.lock().await;
+                        assignments.insert(name.clone(), (id, 1));
+                        assignments.insert(from.clone(), (id, 2));
+                    }
+                }
+            }
+
+            ClientMsg::DeclineChallenge { from } => {
+                if let Some(ref name) = player_name {
+                    let mut lob = lobby.lock().await;
+                    lob.decline_challenge(name, &from);
+                }
+            }
+
+            ClientMsg::Input { action } => {
+                // Lazily resolve assignment for the challenger (player 2), whose
+                // player_number and session_id are set by the acceptor's task.
+                if player_number == 0 {
+                    if let Some(ref name) = player_name {
+                        let assignments = game_assignments.lock().await;
+                        if let Some(&(sid, pnum)) = assignments.get(name.as_str()) {
+                            session_id = Some(sid);
+                            player_number = pnum;
+                        }
+                    }
+                }
+                if player_number > 0 {
+                    if let Some(sid) = session_id {
+                        let mut sess_map = sessions.lock().await;
+                        if let Some(session) = sess_map.get_mut(&sid) {
+                            session.apply_input(player_number, action);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Client disconnected — clean up.
+    if let Some(ref name) = player_name {
+        let mut lob = lobby.lock().await;
+        lob.remove_player(name);
+    }
+    send_task.abort();
+    println!("Client {addr} disconnected");
+}
