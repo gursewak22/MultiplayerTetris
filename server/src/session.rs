@@ -16,7 +16,8 @@ struct PlayerState {
     current_y: i32,
     current_rot: u8,
     next_piece: PieceType,
-    hold_piece: Option<PieceType>,
+    hold_piece: Option<PieceType>,   // last piece sent to opponent (display only)
+    queued_piece: Option<PieceType>, // piece injected by opponent swap; consumed on next spawn
     swap_cooldown_ms: u64,
     bag: SevenBag,
     score: u32,
@@ -43,6 +44,7 @@ impl PlayerState {
             current_rot: 0,
             next_piece,
             hold_piece: None,
+            queued_piece: None,
             swap_cooldown_ms: 0,
             bag,
             score: 0,
@@ -58,7 +60,7 @@ impl PlayerState {
     /// Spawn a new piece from the bag. Returns false if the spawn position is
     /// blocked (top-out).
     fn spawn_next(&mut self) -> bool {
-        self.current_piece = self.bag.next();
+        self.current_piece = self.queued_piece.take().unwrap_or_else(|| self.bag.next());
         self.next_piece = self.bag.peek();
         let (sx, sy) = spawn_position(self.current_piece);
         self.current_x = sx;
@@ -204,27 +206,7 @@ impl PlayerState {
                 self.lock_current();
             }
             InputAction::Swap => {
-                if self.swap_cooldown_ms == 0 {
-                    let incoming = match self.hold_piece {
-                        Some(h) => h,
-                        None => {
-                            // No hold piece yet: consume from the bag.
-                            self.bag.next()
-                        }
-                    };
-                    self.hold_piece = Some(self.current_piece);
-                    self.current_piece = incoming;
-                    let (sx, sy) = spawn_position(self.current_piece);
-                    self.current_x = sx;
-                    self.current_y = sy;
-                    self.current_rot = 0;
-                    self.gravity_accum_ms = 0;
-                    self.lock_accum_ms = 0;
-                    self.on_ground = false;
-                    self.swap_cooldown_ms = SWAP_COOLDOWN_MS;
-                    // Update next preview.
-                    self.next_piece = self.bag.peek();
-                }
+                // Handled at GameSession level via do_swap().
             }
         }
     }
@@ -312,9 +294,62 @@ impl GameSession {
         if self.game_over.is_some() {
             return;
         }
+        if matches!(action, InputAction::Swap) {
+            self.do_swap(player);
+            return;
+        }
         match player {
             1 => self.p1.apply_input(action),
             2 => self.p2.apply_input(action),
+            _ => {}
+        }
+    }
+
+    /// Trade the requesting player's current piece with the opponent's next piece.
+    fn do_swap(&mut self, player: u8) {
+        let (cooldown, my_current, their_next) = match player {
+            1 => (self.p1.swap_cooldown_ms, self.p1.current_piece, self.p2.next_piece),
+            2 => (self.p2.swap_cooldown_ms, self.p2.current_piece, self.p1.next_piece),
+            _ => return,
+        };
+
+        if cooldown != 0 {
+            return;
+        }
+
+        match player {
+            1 => {
+                // P1 keeps their current position; only the piece type and rotation change.
+                self.p1.current_piece = their_next;
+                self.p1.current_rot = 0;
+                self.p1.lock_accum_ms = 0;
+                self.p1.on_ground = false;
+                self.p1.next_piece = self.p1.bag.peek();
+                self.p1.hold_piece = Some(my_current); // "last piece sent" display
+                self.p1.swap_cooldown_ms = SWAP_COOLDOWN_MS;
+
+                // P2 also gets a cooldown — prevents immediate swap-back.
+                self.p2.swap_cooldown_ms = SWAP_COOLDOWN_MS;
+
+                // P2 will receive P1's old piece as their next spawn.
+                self.p2.queued_piece = Some(my_current);
+                self.p2.next_piece = my_current; // update next preview immediately
+            }
+            2 => {
+                self.p2.current_piece = their_next;
+                self.p2.current_rot = 0;
+                self.p2.lock_accum_ms = 0;
+                self.p2.on_ground = false;
+                self.p2.next_piece = self.p2.bag.peek();
+                self.p2.hold_piece = Some(my_current);
+                self.p2.swap_cooldown_ms = SWAP_COOLDOWN_MS;
+
+                // P1 also gets a cooldown — prevents immediate swap-back.
+                self.p1.swap_cooldown_ms = SWAP_COOLDOWN_MS;
+
+                self.p1.queued_piece = Some(my_current);
+                self.p1.next_piece = my_current;
+            }
             _ => {}
         }
     }

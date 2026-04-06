@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Multiplayer Tetris</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #0d0d1a;
+    color: #e0e0e0;
+    font-family: 'Courier New', monospace;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* ── Lobby ── */
+  #lobby {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+    width: 380px;
+  }
+
+  #lobby h1 {
+    font-size: 2rem;
+    color: #00f0f0;
+    letter-spacing: 4px;
+    text-shadow: 0 0 12px #00f0f080;
+  }
+
+  #lobby input {
+    width: 100%;
+    padding: 10px 14px;
+    background: #1a1a2e;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #e0e0e0;
+    font-family: inherit;
+    font-size: 1rem;
+  }
+
+  #lobby input:focus { outline: none; border-color: #00f0f0; }
+
+  button {
+    padding: 10px 22px;
+    background: #00f0f020;
+    border: 1px solid #00f0f0;
+    border-radius: 4px;
+    color: #00f0f0;
+    font-family: inherit;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+
+  button:hover { background: #00f0f040; }
+
+  button.danger {
+    border-color: #f00;
+    color: #f00;
+    background: #f0000010;
+  }
+  button.danger:hover { background: #f0000030; }
+
+  button.accept {
+    border-color: #0f0;
+    color: #0f0;
+    background: #00ff0010;
+  }
+  button.accept:hover { background: #00ff0030; }
+
+  #statusMsg {
+    color: #f0a000;
+    font-size: 0.9rem;
+    min-height: 1.2em;
+    text-align: center;
+  }
+
+  #playerList {
+    width: 100%;
+    background: #1a1a2e;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 10px;
+    min-height: 60px;
+  }
+
+  #playerList h3 { color: #888; font-size: 0.75rem; margin-bottom: 8px; letter-spacing: 2px; }
+
+  .playerRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px solid #222;
+  }
+  .playerRow:last-child { border-bottom: none; }
+  .playerRow span { color: #ccc; }
+
+  #challengeNotif {
+    width: 100%;
+    background: #1a1a2e;
+    border: 1px solid #f0a000;
+    border-radius: 4px;
+    padding: 10px;
+    display: none;
+  }
+  #challengeNotif p { color: #f0a000; margin-bottom: 8px; }
+  #challengeNotif .btnRow { display: flex; gap: 8px; }
+
+  /* ── Game ── */
+  #game {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 12px;
+  }
+
+  #gameBoards {
+    display: flex;
+    align-items: flex-start;
+    gap: 32px;
+  }
+
+  .playerPanel {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .mainBoard {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .boardLabel {
+    font-size: 0.85rem;
+    letter-spacing: 2px;
+    color: #aaa;
+  }
+
+  canvas {
+    display: block;
+    image-rendering: pixelated;
+  }
+
+  #board1, #board2 {
+    border: 2px solid #333;
+    background: #111;
+  }
+
+  .sidePanel {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 24px;
+    min-width: 80px;
+  }
+
+  .sideLabel {
+    font-size: 0.65rem;
+    letter-spacing: 2px;
+    color: #666;
+  }
+
+  .sideValue {
+    font-size: 1rem;
+    color: #ddd;
+    min-height: 1.2em;
+  }
+
+  .previewCanvas {
+    border: 1px solid #2a2a2a;
+    background: #0d0d1a;
+  }
+
+  #vsLabel {
+    display: flex;
+    align-items: center;
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: #444;
+    letter-spacing: 4px;
+    padding-top: 120px;
+  }
+
+  #controls {
+    font-size: 0.7rem;
+    color: #555;
+    letter-spacing: 1px;
+    text-align: center;
+  }
+
+  #gameOverBanner {
+    display: none;
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: #0d0d1aee;
+    border: 2px solid #f0f000;
+    border-radius: 8px;
+    padding: 32px 48px;
+    text-align: center;
+    z-index: 100;
+  }
+
+  #gameOverBanner h2 {
+    font-size: 2rem;
+    color: #f0f000;
+    text-shadow: 0 0 16px #f0f00080;
+    margin-bottom: 12px;
+  }
+
+  #gameOverBanner p { color: #aaa; margin-bottom: 20px; }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════ LOBBY ═══════════════════════ -->
+<div id="lobby">
+  <h1>TETRIS</h1>
+  <div style="color:#666;font-size:0.8rem;letter-spacing:2px">MULTIPLAYER</div>
+
+  <input id="nameInput" placeholder="Enter your name" maxlength="20" />
+  <button id="connectBtn">CONNECT</button>
+
+  <div id="statusMsg"></div>
+
+  <div id="playerList">
+    <h3>ONLINE PLAYERS</h3>
+    <div id="playerRows"><span style="color:#555;font-size:0.85rem">Not connected</span></div>
+  </div>
+
+  <div id="challengeNotif">
+    <p id="challengeFrom"></p>
+    <div class="btnRow">
+      <button class="accept" id="acceptBtn">ACCEPT</button>
+      <button class="danger" id="declineBtn">DECLINE</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ GAME ═══════════════════════ -->
+<div id="game">
+  <div id="gameBoards">
+
+    <!-- Player 1 -->
+    <div class="playerPanel">
+      <div class="sidePanel" style="align-items:flex-end">
+        <div class="sideLabel">SENT</div>
+        <canvas id="hold1" class="previewCanvas" width="90" height="90"></canvas>
+        <div class="sideLabel">SCORE</div>
+        <div class="sideValue" id="score1">0</div>
+        <div class="sideLabel">LINES</div>
+        <div class="sideValue" id="lines1">0</div>
+        <div class="sideLabel">LEVEL</div>
+        <div class="sideValue" id="level1">1</div>
+        <div class="sideLabel">SWAP</div>
+        <div class="sideValue" id="swap1" style="font-size:0.75rem;color:#0f0">READY</div>
+      </div>
+      <div class="mainBoard">
+        <div class="boardLabel" id="p1label">PLAYER 1</div>
+        <canvas id="board1" width="300" height="600"></canvas>
+      </div>
+      <div class="sidePanel">
+        <div class="sideLabel">NEXT</div>
+        <canvas id="next1" class="previewCanvas" width="90" height="90"></canvas>
+      </div>
+    </div>
+
+    <div id="vsLabel">VS</div>
+
+    <!-- Player 2 -->
+    <div class="playerPanel">
+      <div class="sidePanel" style="align-items:flex-end">
+        <div class="sideLabel">NEXT</div>
+        <canvas id="next2" class="previewCanvas" width="90" height="90"></canvas>
+      </div>
+      <div class="mainBoard">
+        <div class="boardLabel" id="p2label">PLAYER 2</div>
+        <canvas id="board2" width="300" height="600"></canvas>
+      </div>
+      <div class="sidePanel">
+        <div class="sideLabel">SENT</div>
+        <canvas id="hold2" class="previewCanvas" width="90" height="90"></canvas>
+        <div class="sideLabel">SCORE</div>
+        <div class="sideValue" id="score2">0</div>
+        <div class="sideLabel">LINES</div>
+        <div class="sideValue" id="lines2">0</div>
+        <div class="sideLabel">LEVEL</div>
+        <div class="sideValue" id="level2">1</div>
+        <div class="sideLabel">SWAP</div>
+        <div class="sideValue" id="swap2" style="font-size:0.75rem;color:#0f0">READY</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div id="controls">← → MOVE &nbsp;|&nbsp; ↑ ROTATE CW &nbsp;|&nbsp; Z ROTATE CCW &nbsp;|&nbsp; SPACE HARD DROP &nbsp;|&nbsp; ↓ SOFT DROP &nbsp;|&nbsp; C SWAP WITH OPPONENT &nbsp;|&nbsp; Q QUIT</div>
+</div>
+
+<!-- ═══════════════════════ GAME OVER ═══════════════════════ -->
+<div id="gameOverBanner">
+  <h2 id="gameOverText">GAME OVER</h2>
+  <p>Press any key or click to return to lobby</p>
+  <button id="returnBtn">RETURN TO LOBBY</button>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────
+// Constants
+// ─────────────────────────────────────────────────────────────
+const CELL = 30;
+const PREVIEW_CELL = 22;
+const COLS = 10, ROWS = 20;
+
+const COLORS = {
+  0: null,
+  1: '#00f0f0', // I – cyan
+  2: '#f0f000', // O – yellow
+  3: '#a000f0', // T – purple
+  4: '#00f000', // S – green
+  5: '#f00000', // Z – red
+  6: '#0050f0', // J – blue
+  7: '#f0a000', // L – orange
+};
+
+const PIECE_COLOR_ID = { I:1, O:2, T:3, S:4, Z:5, J:6, L:7 };
+
+// Rotation tables (ported from renderer/src/main.rs)
+const PIECE_CELLS = {
+  I: [
+    [[0,1],[1,1],[2,1],[3,1]],
+    [[2,0],[2,1],[2,2],[2,3]],
+    [[0,2],[1,2],[2,2],[3,2]],
+    [[1,0],[1,1],[1,2],[1,3]],
+  ],
+  O: [
+    [[1,0],[2,0],[1,1],[2,1]],
+    [[1,0],[2,0],[1,1],[2,1]],
+    [[1,0],[2,0],[1,1],[2,1]],
+    [[1,0],[2,0],[1,1],[2,1]],
+  ],
+  T: [
+    [[1,0],[0,1],[1,1],[2,1]],
+    [[1,0],[1,1],[2,1],[1,2]],
+    [[0,1],[1,1],[2,1],[1,2]],
+    [[1,0],[0,1],[1,1],[1,2]],
+  ],
+  S: [
+    [[1,0],[2,0],[0,1],[1,1]],
+    [[1,0],[1,1],[2,1],[2,2]],
+    [[1,1],[2,1],[0,2],[1,2]],
+    [[0,0],[0,1],[1,1],[1,2]],
+  ],
+  Z: [
+    [[0,0],[1,0],[1,1],[2,1]],
+    [[2,0],[1,1],[2,1],[1,2]],
+    [[0,1],[1,1],[1,2],[2,2]],
+    [[1,0],[0,1],[1,1],[0,2]],
+  ],
+  J: [
+    [[0,0],[0,1],[1,1],[2,1]],
+    [[1,0],[2,0],[1,1],[1,2]],
+    [[0,1],[1,1],[2,1],[2,2]],
+    [[1,0],[1,1],[0,2],[1,2]],
+  ],
+  L: [
+    [[2,0],[0,1],[1,1],[2,1]],
+    [[1,0],[1,1],[1,2],[2,2]],
+    [[0,1],[1,1],[2,1],[0,2]],
+    [[0,0],[1,0],[1,1],[1,2]],
+  ],
+};
+
+function pieceCells(pieceType, rotation) {
+  const table = PIECE_CELLS[pieceType];
+  if (!table) return [];
+  return table[rotation % 4];
+}
+
+// ─────────────────────────────────────────────────────────────
+// Ghost piece
+// ─────────────────────────────────────────────────────────────
+function isValidPos(board, pieceType, px, py, rot) {
+  for (const [dx, dy] of pieceCells(pieceType, rot)) {
+    const x = px + dx, y = py + dy;
+    if (x < 0 || x >= COLS || y >= ROWS) return false;
+    if (y >= 0 && board[y][x] !== 0) return false;
+  }
+  return true;
+}
+
+function computeGhostY(board, piece) {
+  let gy = piece.y;
+  while (isValidPos(board, piece.piece_type, piece.x, gy + 1, piece.rotation)) gy++;
+  return gy;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Drawing
+// ─────────────────────────────────────────────────────────────
+function drawCell(ctx, x, y, color, size, alpha) {
+  const px = x * size, py = y * size;
+  ctx.globalAlpha = alpha ?? 1.0;
+  ctx.fillStyle = color;
+  ctx.fillRect(px + 1, py + 1, size - 2, size - 2);
+
+  // Highlight top-left edge
+  ctx.globalAlpha = (alpha ?? 1.0) * 0.6;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(px + 1, py + 1, size - 2, 2);
+  ctx.fillRect(px + 1, py + 1, 2, size - 2);
+
+  // Shadow bottom-right edge
+  ctx.globalAlpha = (alpha ?? 1.0) * 0.4;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(px + 1, py + size - 3, size - 2, 2);
+  ctx.fillRect(px + size - 3, py + 1, 2, size - 2);
+
+  ctx.globalAlpha = 1.0;
+}
+
+function drawBoard(canvas, board, piece) {
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Background grid
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#1e1e1e';
+  ctx.lineWidth = 0.5;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      ctx.strokeRect(c * CELL, r * CELL, CELL, CELL);
+    }
+  }
+
+  // Locked cells
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const id = board[r][c];
+      if (id !== 0) {
+        drawCell(ctx, c, r, COLORS[id], CELL, 1.0);
+      }
+    }
+  }
+
+  if (piece) {
+    const colorId = PIECE_COLOR_ID[piece.piece_type];
+    const color = COLORS[colorId];
+
+    // Ghost
+    const ghostY = computeGhostY(board, piece);
+    if (ghostY !== piece.y) {
+      for (const [dx, dy] of pieceCells(piece.piece_type, piece.rotation)) {
+        const gx = piece.x + dx, gy = ghostY + dy;
+        if (gx >= 0 && gx < COLS && gy >= 0 && gy < ROWS) {
+          ctx.globalAlpha = 0.25;
+          ctx.fillStyle = color;
+          ctx.fillRect(gx * CELL + 1, gy * CELL + 1, CELL - 2, CELL - 2);
+          ctx.globalAlpha = 1.0;
+        }
+      }
+    }
+
+    // Active piece
+    for (const [dx, dy] of pieceCells(piece.piece_type, piece.rotation)) {
+      const px = piece.x + dx, py = piece.y + dy;
+      if (px >= 0 && px < COLS && py >= 0 && py < ROWS) {
+        drawCell(ctx, px, py, color, CELL, 1.0);
+      }
+    }
+  }
+}
+
+function drawPreview(canvas, pieceType) {
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = '#0d0d1a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  if (!pieceType || !PIECE_CELLS[pieceType]) return;
+
+  const cells = pieceCells(pieceType, 0);
+  const colorId = PIECE_COLOR_ID[pieceType];
+  const color = COLORS[colorId];
+
+  // Find bounding box of piece cells
+  let minX = 4, maxX = -1, minY = 4, maxY = -1;
+  for (const [dx, dy] of cells) {
+    if (dx < minX) minX = dx;
+    if (dx > maxX) maxX = dx;
+    if (dy < minY) minY = dy;
+    if (dy > maxY) maxY = dy;
+  }
+  const pw = (maxX - minX + 1) * PREVIEW_CELL;
+  const ph = (maxY - minY + 1) * PREVIEW_CELL;
+  const offX = Math.floor((canvas.width - pw) / 2) - minX * PREVIEW_CELL;
+  const offY = Math.floor((canvas.height - ph) / 2) - minY * PREVIEW_CELL;
+
+  for (const [dx, dy] of cells) {
+    const px = Math.floor(offX / PREVIEW_CELL) + dx;
+    const py = Math.floor(offY / PREVIEW_CELL) + dy;
+    const screenX = offX + dx * PREVIEW_CELL;
+    const screenY = offY + dy * PREVIEW_CELL;
+
+    ctx.fillStyle = color;
+    ctx.fillRect(screenX + 1, screenY + 1, PREVIEW_CELL - 2, PREVIEW_CELL - 2);
+    // Highlight
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(screenX + 1, screenY + 1, PREVIEW_CELL - 2, 2);
+    ctx.fillRect(screenX + 1, screenY + 1, 2, PREVIEW_CELL - 2);
+    ctx.globalAlpha = 1.0;
+  }
+}
+
+function updateUI(frame) {
+  drawBoard(document.getElementById('board1'), frame.board_p1, frame.piece_p1);
+  drawBoard(document.getElementById('board2'), frame.board_p2, frame.piece_p2);
+
+  drawPreview(document.getElementById('next1'), frame.next_p1);
+  drawPreview(document.getElementById('next2'), frame.next_p2);
+  drawPreview(document.getElementById('hold1'), frame.hold_p1 || null);
+  drawPreview(document.getElementById('hold2'), frame.hold_p2 || null);
+
+  document.getElementById('score1').textContent = frame.score_p1;
+  document.getElementById('score2').textContent = frame.score_p2;
+  document.getElementById('lines1').textContent = frame.lines_p1;
+  document.getElementById('lines2').textContent = frame.lines_p2;
+  document.getElementById('level1').textContent = Math.floor(frame.lines_p1 / 10) + 1;
+  document.getElementById('level2').textContent = Math.floor(frame.lines_p2 / 10) + 1;
+
+  const sc1 = frame.swap_cooldown_p1;
+  const sc2 = frame.swap_cooldown_p2;
+  const swap1El = document.getElementById('swap1');
+  const swap2El = document.getElementById('swap2');
+  if (sc1 <= 0) {
+    swap1El.textContent = 'READY';
+    swap1El.style.color = '#0f0';
+  } else {
+    swap1El.textContent = Math.ceil(sc1 * 10) + 's';
+    swap1El.style.color = '#f0a000';
+  }
+  if (sc2 <= 0) {
+    swap2El.textContent = 'READY';
+    swap2El.style.color = '#0f0';
+  } else {
+    swap2El.textContent = Math.ceil(sc2 * 10) + 's';
+    swap2El.style.color = '#f0a000';
+  }
+
+  if (frame.game_over !== null && frame.game_over !== undefined) {
+    const winner = frame.game_over === 1 ? 2 : 1;
+    showGameOver(`PLAYER ${winner} WINS!`);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────────
+let serverWs = null;
+let rendererWs = null;
+let myName = '';
+let pendingChallenger = '';
+let inGame = false;
+
+// ─────────────────────────────────────────────────────────────
+// Lobby
+// ─────────────────────────────────────────────────────────────
+function sendServer(obj) {
+  if (serverWs && serverWs.readyState === WebSocket.OPEN) {
+    serverWs.send(JSON.stringify(obj));
+  }
+}
+
+document.getElementById('connectBtn').addEventListener('click', connectToServer);
+document.getElementById('nameInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') connectToServer();
+});
+
+function connectToServer() {
+  const name = document.getElementById('nameInput').value.trim();
+  if (!name) { setStatus('Enter a name first.'); return; }
+  myName = name;
+
+  document.getElementById('connectBtn').disabled = true;
+  document.getElementById('nameInput').disabled = true;
+  setStatus('Connecting…');
+
+  serverWs = new WebSocket('ws://localhost:9001');
+
+  serverWs.onopen = () => {
+    sendServer({ type: 'join_lobby', name: myName });
+    setStatus('Connected as ' + myName);
+  };
+
+  serverWs.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data);
+    handleServerMsg(msg);
+  };
+
+  serverWs.onclose = () => {
+    if (!inGame) {
+      setStatus('Disconnected.');
+      document.getElementById('connectBtn').disabled = false;
+      document.getElementById('nameInput').disabled = false;
+    }
+  };
+
+  serverWs.onerror = () => {
+    setStatus('Connection failed. Is the server running?');
+    document.getElementById('connectBtn').disabled = false;
+    document.getElementById('nameInput').disabled = false;
+  };
+}
+
+function handleServerMsg(msg) {
+  switch (msg.type) {
+    case 'lobby_state':
+      renderPlayerList(msg.players);
+      break;
+
+    case 'challenge_received':
+      pendingChallenger = msg.from;
+      document.getElementById('challengeFrom').textContent =
+        `Challenge from "${msg.from}"!`;
+      document.getElementById('challengeNotif').style.display = 'block';
+      break;
+
+    case 'game_start':
+      enterGamePhase();
+      break;
+
+    case 'game_over':
+      showGameOver(`${msg.winner} WINS!`);
+      break;
+  }
+}
+
+function renderPlayerList(players) {
+  const container = document.getElementById('playerRows');
+  container.innerHTML = '';
+  const others = players.filter(p => p !== myName);
+
+  if (players.length === 0) {
+    container.innerHTML = '<span style="color:#555;font-size:0.85rem">No players online</span>';
+    return;
+  }
+
+  for (const p of players) {
+    const row = document.createElement('div');
+    row.className = 'playerRow';
+
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = p === myName ? p + ' (you)' : p;
+    row.appendChild(nameSpan);
+
+    if (p !== myName) {
+      const btn = document.createElement('button');
+      btn.textContent = 'CHALLENGE';
+      btn.style.fontSize = '0.7rem';
+      btn.style.padding = '4px 10px';
+      btn.addEventListener('click', () => {
+        sendServer({ type: 'challenge', target: p });
+        setStatus(`Challenge sent to ${p}…`);
+      });
+      row.appendChild(btn);
+    }
+
+    container.appendChild(row);
+  }
+}
+
+document.getElementById('acceptBtn').addEventListener('click', () => {
+  sendServer({ type: 'accept_challenge', from: pendingChallenger });
+  document.getElementById('challengeNotif').style.display = 'none';
+});
+
+document.getElementById('declineBtn').addEventListener('click', () => {
+  sendServer({ type: 'decline_challenge', from: pendingChallenger });
+  document.getElementById('challengeNotif').style.display = 'none';
+  pendingChallenger = '';
+});
+
+function setStatus(msg) {
+  document.getElementById('statusMsg').textContent = msg;
+}
+
+// ─────────────────────────────────────────────────────────────
+// Game phase
+// ─────────────────────────────────────────────────────────────
+function enterGamePhase() {
+  inGame = true;
+  document.getElementById('lobby').style.display = 'none';
+  document.getElementById('game').style.display = 'flex';
+
+  rendererWs = new WebSocket('ws://localhost:9003');
+  rendererWs.onmessage = (ev) => {
+    const frame = JSON.parse(ev.data);
+    updateUI(frame);
+  };
+  rendererWs.onerror = () => console.warn('Renderer WS error');
+  rendererWs.onclose = () => console.log('Renderer WS closed');
+
+  // Intercept arrow keys to prevent page scrolling
+  window.addEventListener('keydown', handleGameKey, { passive: false });
+}
+
+const KEY_MAP = {
+  ArrowLeft:  'move_left',
+  ArrowRight: 'move_right',
+  ArrowUp:    'rotate_cw',
+  ArrowDown:  'soft_drop',
+  ' ':        'hard_drop',
+};
+
+function handleGameKey(e) {
+  // Prevent page scroll for game keys
+  if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' '].includes(e.key)) {
+    e.preventDefault();
+  }
+
+  if (e.key === 'q' || e.key === 'Q') {
+    returnToLobby();
+    return;
+  }
+
+  let action = KEY_MAP[e.key];
+  if (!action) {
+    if (e.key === 'z' || e.key === 'Z') action = 'rotate_ccw';
+    else if (e.key === 'c' || e.key === 'C') action = 'swap';
+  }
+
+  if (action) {
+    sendServer({ type: 'input', action });
+  }
+}
+
+function showGameOver(text) {
+  document.getElementById('gameOverText').textContent = text;
+  document.getElementById('gameOverBanner').style.display = 'block';
+}
+
+function returnToLobby() {
+  inGame = false;
+  window.removeEventListener('keydown', handleGameKey);
+
+  if (rendererWs) { rendererWs.close(); rendererWs = null; }
+
+  document.getElementById('game').style.display = 'none';
+  document.getElementById('gameOverBanner').style.display = 'none';
+  document.getElementById('lobby').style.display = 'flex';
+
+  // Clear boards
+  ['board1','board2','hold1','hold2','next1','next2'].forEach(id => {
+    const c = document.getElementById(id);
+    const ctx = c.getContext('2d');
+    ctx.clearRect(0, 0, c.width, c.height);
+  });
+}
+
+document.getElementById('returnBtn').addEventListener('click', returnToLobby);
+document.getElementById('gameOverBanner').addEventListener('click', returnToLobby);
+</script>
+</body>
+</html>

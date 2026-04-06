@@ -1,1 +1,1 @@
-/Users/garry21/tetris/MultiplayerTetris/target/debug/renderer: /Users/garry21/tetris/MultiplayerTetris/renderer/src/main.rs /Users/garry21/tetris/MultiplayerTetris/shared/src/lib.rs
+/Users/garry21/tetris/MultiplayerTetris/target/debug/renderer: /Users/garry21/tetris/MultiplayerTetris/renderer/index.html /Users/garry21/tetris/MultiplayerTetris/renderer/src/main.rs /Users/garry21/tetris/MultiplayerTetris/shared/src/lib.rs
