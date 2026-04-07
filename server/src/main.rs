@@ -25,7 +25,7 @@ type LobbyRef = Arc<Mutex<Lobby>>;
 /// All active game sessions indexed by an incrementing id.
 type Sessions = Arc<Mutex<HashMap<u64, GameSession>>>;
 /// Channel for pushing DrawFrames to the renderer task.
-type RendererTx = Arc<Mutex<Option<mpsc::UnboundedSender<DrawFrame>>>>;
+type RendererTx = Arc<Mutex<Option<mpsc::UnboundedSender<shared::RenderMsg>>>>;
 /// Maps player name → (session_id, player_number) once a game has been assigned.
 type GameAssignments = Arc<Mutex<HashMap<String, (u64, u8)>>>;
 
@@ -54,7 +54,8 @@ async fn main() {
         let sessions = sessions.clone();
         let lobby = lobby.clone();
         let renderer_tx = renderer_tx.clone();
-        tokio::spawn(tick_loop(sessions, lobby, renderer_tx));
+        let game_assignments_clone = game_assignments.clone();
+        tokio::spawn(tick_loop(sessions, lobby, renderer_tx, game_assignments_clone));
     }
 
     // Accept renderer connections on :9002.
@@ -83,7 +84,12 @@ async fn main() {
 // Game tick loop (~60 fps)
 // ---------------------------------------------------------------------------
 
-async fn tick_loop(sessions: Sessions, _lobby: LobbyRef, renderer_tx: RendererTx) {
+async fn tick_loop(
+    sessions: Sessions,
+    lobby: LobbyRef,
+    renderer_tx: RendererTx,
+    game_assignments: GameAssignments,
+) {
     let tick_duration = Duration::from_millis(16);
     let mut last = Instant::now();
 
@@ -93,34 +99,56 @@ async fn tick_loop(sessions: Sessions, _lobby: LobbyRef, renderer_tx: RendererTx
         last = Instant::now();
         let elapsed_ms = elapsed.as_millis() as u64;
 
-        let mut frames: Vec<DrawFrame> = Vec::new();
+        let mut frames = Vec::new();
         {
             let mut sess_map = sessions.lock().await;
-            for session in sess_map.values_mut() {
+            for (&id, session) in sess_map.iter_mut() {
                 session.tick(elapsed_ms);
-                frames.push(session.to_draw_frame());
+                frames.push((id, session.to_draw_frame()));
             }
         }
 
         // Check for game-over events and update lobby rankings.
         {
             let mut sess_map = sessions.lock().await;
-            let mut finished: Vec<u64> = Vec::new();
+            let mut finished = Vec::new();
             for (&id, session) in sess_map.iter() {
-                if session.game_over.is_some() {
-                    finished.push(id);
+                if let Some(loser_num) = session.game_over {
+                    finished.push((id, loser_num));
                 }
             }
-            for id in finished {
-                sess_map.remove(&id);
+            if !finished.is_empty() {
+                let mut assignments = game_assignments.lock().await;
+                let mut lob = lobby.lock().await;
+                for (id, loser_num) in finished {
+                    sess_map.remove(&id);
+                    
+                    let mut p1_name = None;
+                    let mut p2_name = None;
+                    for (name, &(sid, pnum)) in assignments.iter() {
+                        if sid == id {
+                            if pnum == 1 { p1_name = Some(name.clone()); }
+                            if pnum == 2 { p2_name = Some(name.clone()); }
+                        }
+                    }
+                    
+                    if let (Some(p1), Some(p2)) = (p1_name, p2_name) {
+                        let winner = if loser_num == 1 { &p2 } else { &p1 };
+                        let loser = if loser_num == 1 { &p1 } else { &p2 };
+                        lob.record_game_result(winner, loser);
+                    }
+                    
+                    assignments.retain(|_, v| v.0 != id);
+                }
+                lob.broadcast_lobby_state();
             }
         }
 
-        // Push the latest frame to the renderer if connected.
-        if let Some(frame) = frames.into_iter().last() {
+        // Push the latest frames to the renderer if connected.
+        if !frames.is_empty() {
             let tx_guard = renderer_tx.lock().await;
             if let Some(tx) = tx_guard.as_ref() {
-                let _ = tx.send(frame);
+                let _ = tx.send(shared::RenderMsg::Frames { frames });
             }
         }
     }
@@ -158,7 +186,7 @@ async fn handle_renderer_push(stream: TcpStream, addr: SocketAddr, renderer_tx: 
     println!("Renderer connected from {addr}");
 
     let (mut ws_sink, mut ws_stream) = ws.split();
-    let (tx, mut rx) = mpsc::unbounded_channel::<DrawFrame>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<shared::RenderMsg>();
 
     // Register this as the active renderer sender.
     {
@@ -302,6 +330,11 @@ async fn handle_client(
                         let mut assignments = game_assignments.lock().await;
                         assignments.insert(name.clone(), (id, 1));
                         assignments.insert(from.clone(), (id, 2));
+
+                        // Notify both players that the game is starting, with their session ID.
+                        let lob = lobby.lock().await;
+                        lob.send_to(name, ServerMsg::GameStart { session_id: id });
+                        lob.send_to(&from, ServerMsg::GameStart { session_id: id });
                     }
                 }
             }
@@ -310,6 +343,17 @@ async fn handle_client(
                 if let Some(ref name) = player_name {
                     let mut lob = lobby.lock().await;
                     lob.decline_challenge(name, &from);
+                }
+            }
+
+            ClientMsg::Spectate { target } => {
+                let assignments = game_assignments.lock().await;
+                if let Some(&(sid, _)) = assignments.get(target.as_str()) {
+                    let _ = server_tx.send(ServerMsg::SpectateInfo { session_id: sid });
+                } else {
+                    let _ = server_tx.send(ServerMsg::ServerError {
+                        msg: format!("Player '{target}' is not in an active game."),
+                    });
                 }
             }
 

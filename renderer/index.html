@@ -630,6 +630,10 @@ function handleServerMsg(msg) {
       renderPlayerList(msg.players);
       break;
 
+    case 'scoreboard':
+      renderScoreboard(msg.scores);
+      break;
+
     case 'challenge_received':
       pendingChallenger = msg.from;
       document.getElementById('challengeFrom').textContent =
@@ -638,7 +642,11 @@ function handleServerMsg(msg) {
       break;
 
     case 'game_start':
-      enterGamePhase();
+      enterGamePhase(msg.session_id);
+      break;
+
+    case 'spectate_info':
+      enterGamePhase(msg.session_id);
       break;
 
     case 'game_over':
@@ -675,6 +683,16 @@ function renderPlayerList(players) {
         setStatus(`Challenge sent to ${p}…`);
       });
       row.appendChild(btn);
+
+      const specBtn = document.createElement('button');
+      specBtn.textContent = 'SPECTATE';
+      specBtn.style.fontSize = '0.7rem';
+      specBtn.style.padding = '4px 10px';
+      specBtn.style.marginLeft = '4px';
+      specBtn.addEventListener('click', () => {
+        sendServer({ type: 'spectate', target: p });
+      });
+      row.appendChild(specBtn);
     }
 
     container.appendChild(row);
@@ -696,15 +714,56 @@ function setStatus(msg) {
   document.getElementById('statusMsg').textContent = msg;
 }
 
+function renderScoreboard(scores) {
+  let sb = document.getElementById('scoreboardDiv');
+  if (!sb) {
+    sb = document.createElement('div');
+    sb.id = 'scoreboardDiv';
+    sb.style.width = '100%';
+    sb.style.background = '#1a1a2e';
+    sb.style.border = '1px solid #333';
+    sb.style.borderRadius = '4px';
+    sb.style.padding = '10px';
+    document.getElementById('lobby').appendChild(sb);
+  }
+  
+  sb.innerHTML = '<h3 style="color:#888;font-size:0.75rem;margin-bottom:8px;letter-spacing:2px;">GLOBAL RANKINGS</h3>';
+  
+  if (!scores || scores.length === 0) {
+    sb.innerHTML += '<span style="color:#555;font-size:0.85rem">No rankings yet</span>';
+    return;
+  }
+  
+  scores.forEach((s, idx) => {
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.justifyContent = 'space-between';
+    row.style.padding = '4px 0';
+    row.style.borderBottom = '1px solid #222';
+    row.style.color = '#ccc';
+    row.innerText = `${idx + 1}. ${s[0]}`;
+    
+    const scoreSpan = document.createElement('span');
+    scoreSpan.style.color = '#00f0f0';
+    scoreSpan.innerText = s[1];
+    row.appendChild(scoreSpan);
+    
+    sb.appendChild(row);
+  });
+}
+
 // ─────────────────────────────────────────────────────────────
 // Game phase
 // ─────────────────────────────────────────────────────────────
-function enterGamePhase() {
+function enterGamePhase(sessionId) {
   inGame = true;
   document.getElementById('lobby').style.display = 'none';
   document.getElementById('game').style.display = 'flex';
 
   rendererWs = new WebSocket('ws://localhost:9003');
+  rendererWs.onopen = () => {
+    rendererWs.send(JSON.stringify({ session_id: sessionId }));
+  };
   rendererWs.onmessage = (ev) => {
     const frame = JSON.parse(ev.data);
     updateUI(frame);

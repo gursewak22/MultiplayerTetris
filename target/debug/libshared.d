@@ -1,1 +1,1 @@
-/Users/garry21/tetris/MultiplayerTetris/target/debug/libshared.rlib: /Users/garry21/tetris/MultiplayerTetris/shared/src/lib.rs
+C:\cygwin64\home\adity\MultiplayerTetris-main\target\debug\libshared.rlib: C:\cygwin64\home\adity\MultiplayerTetris-main\shared\src\lib.rs

@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::fs;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
@@ -21,7 +21,7 @@ pub struct Rankings {
 
 impl Rankings {
     pub fn load() -> Self {
-        if Path::new(RANKINGS_FILE).exists() {
+        if std::path::Path::new(RANKINGS_FILE).exists() {
             match std::fs::read_to_string(RANKINGS_FILE) {
                 Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
                 Err(_) => Default::default(),
@@ -160,10 +160,16 @@ impl Lobby {
     }
 
     pub fn broadcast_lobby_state(&self) {
-        let players: Vec<String> = self.players.keys().cloned().collect();
-        let msg = ServerMsg::LobbyState { players };
+        let player_list: Vec<String> = self.players.keys().cloned().collect();
+        let mut scores: Vec<(String, u32)> = self.rankings.scores.clone().into_iter().collect();
+        scores.sort_by(|a, b| b.1.cmp(&a.1)); // Sort descending
+
+        let state_msg = ServerMsg::LobbyState { players: player_list };
+        let score_msg = ServerMsg::Scoreboard { scores };
+
         for handle in self.players.values() {
-            let _ = handle.tx.send(msg.clone());
+            let _ = handle.tx.send(state_msg.clone());
+            let _ = handle.tx.send(score_msg.clone());
         }
     }
 
@@ -193,9 +199,6 @@ impl Lobby {
             .position(|c| c.from == challenger && c.to == acceptor);
         if let Some(i) = pos {
             self.challenges.remove(i);
-            // Notify both that the game is starting.
-            self.send_to(challenger, ServerMsg::GameStart);
-            self.send_to(acceptor, ServerMsg::GameStart);
             true
         } else {
             false

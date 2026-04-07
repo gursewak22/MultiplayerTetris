@@ -14,7 +14,7 @@ use shared::DrawFrame;
 // Shared state: connected browser clients and latest DrawFrame channel
 // ---------------------------------------------------------------------------
 
-type ClientMap = Arc<Mutex<HashMap<u64, mpsc::UnboundedSender<DrawFrame>>>>;
+type ClientMap = Arc<Mutex<HashMap<u64, (u64, mpsc::UnboundedSender<DrawFrame>)>>>;
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -138,12 +138,27 @@ async fn handle_client_connection(
     println!("Browser client {id} connected from {addr}");
 
     let (mut ws_sink, mut ws_stream) = ws.split();
+
+    // Wait for the first message to be RendererSub
+    let first_msg = ws_stream.next().await;
+    let session_id = if let Some(Ok(Message::Text(t))) = first_msg {
+        if let Ok(sub) = serde_json::from_str::<shared::RendererSub>(&t) {
+            sub.session_id
+        } else {
+            eprintln!("Invalid initial message from {addr}");
+            return;
+        }
+    } else {
+        eprintln!("Client {addr} connected without subscription");
+        return;
+    };
+
     let (tx, mut rx) = mpsc::unbounded_channel::<DrawFrame>();
 
-    // Register client.
+    // Register client with its requested session_id.
     {
         let mut map = clients.lock().await;
-        map.insert(id, tx);
+        map.insert(id, (session_id, tx));
     }
 
     // Forward DrawFrames to the browser WebSocket.
@@ -205,18 +220,22 @@ async fn handle_server_stream(
             _ => continue,
         };
 
-        let frame: DrawFrame = match serde_json::from_str(&text) {
-            Ok(f) => f,
+        let message: shared::RenderMsg = match serde_json::from_str(&text) {
+            Ok(m) => m,
             Err(e) => {
-                eprintln!("Parse DrawFrame error: {e}");
+                eprintln!("Parse RenderMsg error: {e}");
                 continue;
             }
         };
 
-        // Broadcast raw DrawFrame JSON to all connected browser clients.
-        let map = clients.lock().await;
-        for tx in map.values() {
-            let _ = tx.send(frame.clone());
+        if let shared::RenderMsg::Frames { frames } = message {
+            // Broadcast targeted DrawFrame JSON to connected browser clients based on session_id.
+            let map = clients.lock().await;
+            for (session_id, tx) in map.values() {
+                if let Some((_, frame)) = frames.iter().find(|(id, _)| id == session_id) {
+                    let _ = tx.send(frame.clone());
+                }
+            }
         }
     }
 

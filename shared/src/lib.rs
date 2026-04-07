@@ -22,6 +22,7 @@ pub enum ClientMsg {
     Challenge { target: String },
     AcceptChallenge { from: String },
     DeclineChallenge { from: String },
+    Spectate { target: String },
 }
 
 /// Piece type identifiers.
@@ -72,8 +73,11 @@ pub struct DrawFrame {
 pub enum ServerMsg {
     LobbyState { players: Vec<String> },
     ChallengeReceived { from: String },
-    GameStart,
+    GameStart { session_id: u64 },
     GameOver { winner: String },
+    Scoreboard { scores: Vec<(String, u32)> },
+    SpectateInfo { session_id: u64 },
+    ServerError { msg: String },
 }
 
 /// A rendered frame that the renderer pushes to connected clients.
@@ -81,4 +85,15 @@ pub enum ServerMsg {
 pub struct FrameOutput {
     /// ANSI-coloured lines ready to print.
     pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RenderMsg {
+    Frames { frames: Vec<(u64, DrawFrame)> },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RendererSub {
+    pub session_id: u64,
 }

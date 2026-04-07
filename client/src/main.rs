@@ -73,8 +73,8 @@ async fn main() {
         }
     });
 
-    // Channel: server sends GameStart → unblock lobby loop
-    let (game_start_tx, mut game_start_rx) = mpsc::unbounded_channel::<()>();
+    // Channel: server sends GameStart or SpectateInfo → unblock lobby loop
+    let (game_start_tx, mut game_start_rx) = mpsc::unbounded_channel::<u64>();
 
     // Receive server messages in background during lobby
     let game_start_tx2 = game_start_tx.clone();
@@ -96,10 +96,26 @@ async fn main() {
                 ServerMsg::ChallengeReceived { from } => {
                     println!("[Lobby] Challenge from '{from}'! Type: accept {from}");
                 }
-                ServerMsg::GameStart => {
+                ServerMsg::GameStart { session_id } => {
                     println!("[Game] Game starting! Connecting to renderer...");
-                    let _ = game_start_tx2.send(());
+                    let _ = game_start_tx2.send(session_id);
                     break;
+                }
+                ServerMsg::SpectateInfo { session_id } => {
+                    println!("[Game] Spectating match! Connecting to renderer...");
+                    let _ = game_start_tx2.send(session_id);
+                    break;
+                }
+                ServerMsg::ServerError { msg } => {
+                    println!("[Server Error] {msg}");
+                }
+                ServerMsg::Scoreboard { scores } => {
+                    // Do not print scoreboard endlessly here unless we want to, wait, sure!
+                    println!("\n--- Global Rankings ---");
+                    for (i, (player, score)) in scores.iter().enumerate() {
+                        println!(" {}. {player:-<15} {score}", i + 1);
+                    }
+                    println!("-----------------------\n");
                 }
                 ServerMsg::GameOver { winner } => {
                     println!("[Game] Game over. Winner: {winner}");
@@ -113,9 +129,14 @@ async fn main() {
     let mut lines = BufReader::new(stdin).lines();
     let sink_tx2 = sink_tx.clone();
 
+    let mut game_session: u64 = 0;
+
     loop {
         tokio::select! {
-            _ = game_start_rx.recv() => {
+            session = game_start_rx.recv() => {
+                if let Some(s) = session {
+                    game_session = s;
+                }
                 break;
             }
             line = lines.next_line() => {
@@ -139,9 +160,12 @@ async fn main() {
                             "decline" if !arg.is_empty() => {
                                 let _ = sink_tx2.send(ClientMsg::DeclineChallenge { from: arg });
                             }
+                            "spectate" if !arg.is_empty() => {
+                                let _ = sink_tx2.send(ClientMsg::Spectate { target: arg });
+                            }
                             "" => {}
                             _ => {
-                                println!("Unknown command. Try: challenge <name>, accept <name>, decline <name>");
+                                println!("Unknown command. Try: challenge <name>, accept <name>, decline <name>, spectate <name>");
                             }
                         }
                     }
@@ -167,7 +191,12 @@ async fn main() {
         }
     };
 
-    let (_renderer_sink, mut renderer_stream) = renderer_ws.split();
+    let (mut renderer_sink, mut renderer_stream) = renderer_ws.split();
+
+    // Send our subscription right away.
+    let sub = shared::RendererSub { session_id: game_session };
+    let json = serde_json::to_string(&sub).unwrap_or_default();
+    let _ = renderer_sink.send(Message::Text(json.into())).await;
 
     // Task: receive frames from renderer and print them
     let render_task = tokio::spawn(async move {
