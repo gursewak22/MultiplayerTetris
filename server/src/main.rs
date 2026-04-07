@@ -135,7 +135,21 @@ async fn tick_loop(
                     if let (Some(p1), Some(p2)) = (p1_name, p2_name) {
                         let winner = if loser_num == 1 { &p2 } else { &p1 };
                         let loser = if loser_num == 1 { &p1 } else { &p2 };
-                        lob.record_game_result(winner, loser);
+                        let (round_complete, tourney_finished) = lob.record_game_result(winner, loser);
+                        
+                        if round_complete {
+                            start_tournament_round_timer(sessions.clone(), game_assignments.clone(), lobby.clone());
+                        }
+                        
+                        if tourney_finished {
+                            let lob_ref = lobby.clone();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(Duration::from_secs(10)).await;
+                                let mut l = lob_ref.lock().await;
+                                l.tournament = None;
+                                l.broadcast_tournament_state();
+                            });
+                        }
                     }
                     
                     assignments.retain(|_, v| v.0 != id);
@@ -225,6 +239,39 @@ async fn handle_renderer_push(stream: TcpStream, addr: SocketAddr, renderer_tx: 
     // Clear the renderer sender so frames are discarded until reconnection.
     let mut guard = renderer_tx.lock().await;
     *guard = None;
+}
+
+// ---------------------------------------------------------------------------
+// Tournament Helper
+// ---------------------------------------------------------------------------
+fn start_tournament_round_timer(
+    sessions: Sessions,
+    game_assignments: GameAssignments,
+    lobby: LobbyRef,
+) {
+    tokio::spawn(async move {
+        // Wait 3 seconds for players to see the bracket UI
+        tokio::time::sleep(Duration::from_secs(3)).await;
+
+        let lob = lobby.lock().await;
+        let mut sess_map = sessions.lock().await;
+        let mut assignments = game_assignments.lock().await;
+
+        if let Some(ref bracket) = lob.tournament {
+            for (p1, p2) in &bracket.matches {
+                let new_session = session::GameSession::new();
+                let mut id = sess_map.len() as u64;
+                while sess_map.contains_key(&id) { id += 1; }
+                
+                sess_map.insert(id, new_session);
+                assignments.insert(p1.clone(), (id, 1));
+                assignments.insert(p2.clone(), (id, 2));
+
+                lob.send_to(p1, shared::ServerMsg::GameStart { session_id: id });
+                lob.send_to(p2, shared::ServerMsg::GameStart { session_id: id });
+            }
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -346,6 +393,30 @@ async fn handle_client(
                 }
             }
 
+            ClientMsg::JoinTournament => {
+                if let Some(ref name) = player_name {
+                    let mut lob = lobby.lock().await;
+                    let _ = lob.join_tournament(name);
+                }
+            }
+
+            ClientMsg::LeaveTournament => {
+                if let Some(ref name) = player_name {
+                    let mut lob = lobby.lock().await;
+                    lob.leave_tournament(name);
+                }
+            }
+
+            ClientMsg::StartTournament => {
+                let started = {
+                    let mut lob = lobby.lock().await;
+                    lob.start_tournament().is_ok()
+                };
+                if started {
+                    start_tournament_round_timer(sessions.clone(), game_assignments.clone(), lobby.clone());
+                }
+            }
+
             ClientMsg::Spectate { target } => {
                 let assignments = game_assignments.lock().await;
                 if let Some(&(sid, _)) = assignments.get(target.as_str()) {
@@ -358,22 +429,12 @@ async fn handle_client(
             }
 
             ClientMsg::Input { action } => {
-                // Lazily resolve assignment for the challenger (player 2), whose
-                // player_number and session_id are set by the acceptor's task.
-                if player_number == 0 {
-                    if let Some(ref name) = player_name {
-                        let assignments = game_assignments.lock().await;
-                        if let Some(&(sid, pnum)) = assignments.get(name.as_str()) {
-                            session_id = Some(sid);
-                            player_number = pnum;
-                        }
-                    }
-                }
-                if player_number > 0 {
-                    if let Some(sid) = session_id {
+                if let Some(ref name) = player_name {
+                    let assignments = game_assignments.lock().await;
+                    if let Some(&(sid, pnum)) = assignments.get(name.as_str()) {
                         let mut sess_map = sessions.lock().await;
                         if let Some(session) = sess_map.get_mut(&sid) {
-                            session.apply_input(player_number, action);
+                            session.apply_input(pnum, action);
                         }
                     }
                 }

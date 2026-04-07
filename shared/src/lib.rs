@@ -23,6 +23,9 @@ pub enum ClientMsg {
     AcceptChallenge { from: String },
     DeclineChallenge { from: String },
     Spectate { target: String },
+    JoinTournament,
+    LeaveTournament,
+    StartTournament,
 }
 
 /// Piece type identifiers.
@@ -78,6 +81,7 @@ pub enum ServerMsg {
     Scoreboard { scores: Vec<(String, u32)> },
     SpectateInfo { session_id: u64 },
     ServerError { msg: String },
+    TournamentState { queue: Vec<String>, bracket: Option<TournamentBracket> },
 }
 
 /// A rendered frame that the renderer pushes to connected clients.
@@ -96,4 +100,55 @@ pub enum RenderMsg {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RendererSub {
     pub session_id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TournamentBracket {
+    pub players: Vec<String>,
+    pub matches: Vec<(String, String)>,
+    pub winners: Vec<String>,
+    pub round: u32,
+    pub champion: Option<String>,
+}
+
+impl TournamentBracket {
+    pub fn new(players: Vec<String>) -> Self {
+        let matches = Self::make_matches(&players);
+        Self {
+            players,
+            matches,
+            winners: Vec::new(),
+            round: 1,
+            champion: None,
+        }
+    }
+
+    pub fn make_matches(players: &[String]) -> Vec<(String, String)> {
+        players.chunks(2).map(|c| {
+            if c.len() == 2 {
+                (c[0].clone(), c[1].clone())
+            } else {
+                (c[0].clone(), "BYE".to_string())
+            }
+        }).collect()
+    }
+
+    pub fn record_winner(&mut self, winner: String) -> bool {
+        if !self.winners.contains(&winner) {
+            self.winners.push(winner);
+        }
+        if self.winners.len() == self.matches.len() {
+            if self.winners.len() == 1 {
+                self.champion = Some(self.winners[0].clone());
+            } else {
+                self.players = self.winners.drain(..).collect();
+                self.matches = Self::make_matches(&self.players);
+                self.round += 1;
+            }
+            return true;
+        }
+        false
+    }
+    
+    // We can remove is_round_complete() or keep it, doesn't matter.
 }

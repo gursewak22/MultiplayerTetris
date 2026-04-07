@@ -2,7 +2,7 @@
 set -e
 
 # --- CONFIGURATION ---
-TARGET_IP="192.168.137.1" # Replace with your specific IP
+TARGET_IP="localhost" # Replace with your specific IP
 PORT="8080"
 # ---------------------
 

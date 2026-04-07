@@ -246,6 +246,23 @@
       <button class="danger" id="declineBtn">DECLINE</button>
     </div>
   </div>
+  <button id="enterTourneyBtn" style="width:100%;margin-top:10px;border-color:#a0f;color:#a0f;background:#a000ff10;">ENTER TOURNAMENT</button>
+</div>
+
+<!-- ═══════════════════════ TOURNAMENT ═══════════════════════ -->
+<div id="tournamentRoom" style="display:none; flex-direction:column; align-items:center; gap:18px; width:480px;">
+  <h1 style="font-size:2rem;color:#a000ff;letter-spacing:4px;text-shadow:0 0 12px #a000ff80;">TOURNAMENT</h1>
+  
+  <div style="display:flex; justify-content:space-between; width:100%;">
+    <button class="danger" id="leaveTourneyBtn">LEAVE</button>
+    <button class="accept" id="startTourneyBtn" disabled>START (0/8)</button>
+  </div>
+
+  <div id="tourneyQueue" style="width:100%;background:#1a1a2e;border:1px solid #333;border-radius:4px;padding:10px;min-height:60px;">
+  </div>
+  
+  <div id="tourneyBracket" style="width:100%;background:#1a1a2e;border:1px solid #333;border-radius:4px;padding:10px;display:none; flex-direction:column;">
+  </div>
 </div>
 
 <!-- ═══════════════════════ GAME ═══════════════════════ -->
@@ -573,6 +590,8 @@ let rendererWs = null;
 let myName = '';
 let pendingChallenger = '';
 let inGame = false;
+let inTournament = false;
+let lastTournamentState = null;
 
 // ─────────────────────────────────────────────────────────────
 // Lobby
@@ -582,6 +601,24 @@ function sendServer(obj) {
     serverWs.send(JSON.stringify(obj));
   }
 }
+
+document.getElementById('enterTourneyBtn').addEventListener('click', () => {
+  inTournament = true;
+  document.getElementById('lobby').style.display = 'none';
+  document.getElementById('tournamentRoom').style.display = 'flex';
+  sendServer({ type: 'join_tournament' });
+});
+
+document.getElementById('leaveTourneyBtn').addEventListener('click', () => {
+  inTournament = false;
+  document.getElementById('tournamentRoom').style.display = 'none';
+  if (!inGame) document.getElementById('lobby').style.display = 'flex';
+  sendServer({ type: 'leave_tournament' });
+});
+
+document.getElementById('startTourneyBtn').addEventListener('click', () => {
+  sendServer({ type: 'start_tournament' });
+});
 
 document.getElementById('connectBtn').addEventListener('click', connectToServer);
 document.getElementById('nameInput').addEventListener('keydown', e => {
@@ -642,11 +679,37 @@ function handleServerMsg(msg) {
       break;
 
     case 'game_start':
+      document.getElementById('gameOverBanner').style.display = 'none';
+      document.getElementById('tournamentRoom').style.display = 'none';
+      
+      ['board1','board2','hold1','hold2','next1','next2'].forEach(id => {
+        const c = document.getElementById(id);
+        const ctx = c.getContext('2d');
+        ctx.clearRect(0, 0, c.width, c.height);
+      });
+      
       enterGamePhase(msg.session_id);
       break;
 
     case 'spectate_info':
+      document.getElementById('gameOverBanner').style.display = 'none';
+      document.getElementById('tournamentRoom').style.display = 'none';
+      
+      ['board1','board2','hold1','hold2','next1','next2'].forEach(id => {
+        const c = document.getElementById(id);
+        const ctx = c.getContext('2d');
+        ctx.clearRect(0, 0, c.width, c.height);
+      });
+      
       enterGamePhase(msg.session_id);
+      break;
+
+    case 'tournament_state':
+      lastTournamentState = msg;
+      if (document.getElementById('lobby').style.display !== 'none' ||
+          document.getElementById('tournamentRoom').style.display === 'flex') {
+        renderTournamentState(msg);
+      }
       break;
 
     case 'game_over':
@@ -752,6 +815,62 @@ function renderScoreboard(scores) {
   });
 }
 
+function renderTournamentState(msg) {
+  if (!msg.bracket) {
+    document.getElementById('tourneyQueue').style.display = 'block';
+    document.getElementById('tourneyBracket').style.display = 'none';
+
+    const q = document.getElementById('tourneyQueue');
+    q.innerHTML = '<h3 style="color:#888;font-size:0.75rem;margin-bottom:8px;letter-spacing:2px;">WAITING ROOM</h3>';
+    msg.queue.forEach(p => {
+       const d = document.createElement('div');
+       d.style.color = '#ccc';
+       d.style.padding = '4px 0';
+       d.innerText = p;
+       q.appendChild(d);
+    });
+
+    const sBtn = document.getElementById('startTourneyBtn');
+    sBtn.textContent = `START (${msg.queue.length}/8)`;
+    sBtn.disabled = !(msg.queue.length === 2 || msg.queue.length === 4 || msg.queue.length === 8);
+  } else {
+    document.getElementById('tourneyQueue').style.display = 'none';
+    document.getElementById('tourneyBracket').style.display = 'flex';
+    
+    const t = document.getElementById('tourneyBracket');
+    t.innerHTML = `<h3 style="color:#888;font-size:0.75rem;margin-bottom:8px;letter-spacing:2px;">BRACKET (ROUND ${msg.bracket.round})</h3>`;
+    
+    msg.bracket.matches.forEach(m => {
+       const row = document.createElement('div');
+       row.style.display = 'flex'; row.style.justifyContent = 'space-between'; row.style.alignItems = 'center';
+       row.style.border = '1px solid #444'; row.style.padding = '8px'; row.style.marginBottom = '8px';
+       
+       let t1 = m[0]; let t2 = m[1];
+       if (msg.bracket.winners.includes(m[0])) t1 = '🏆 ' + t1;
+       if (msg.bracket.winners.includes(m[1])) t2 = '🏆 ' + t2;
+
+       const label = document.createElement('div');
+       label.innerHTML = `<span style="color:#0f0">${t1}</span> <span style="color:#888">vs</span> <span style="color:#0f0">${t2}</span>`;
+       row.appendChild(label);
+       
+       const specBtn = document.createElement('button');
+       specBtn.textContent = 'SPECTATE';
+       specBtn.style.padding = '4px 10px';
+       specBtn.style.fontSize = '0.7rem';
+       specBtn.addEventListener('click', () => {
+         sendServer({ type: 'spectate', target: m[0] });
+       });
+       row.appendChild(specBtn);
+
+       t.appendChild(row);
+    });
+
+    if (msg.bracket.champion) {
+       t.innerHTML += `<div style="text-align:center; color:#f0f000; font-size:1.5rem; margin-top:16px;">🏆 CHAMPION: ${msg.bracket.champion} 🏆</div>`;
+    }
+  }
+}
+
 // ─────────────────────────────────────────────────────────────
 // Game phase
 // ─────────────────────────────────────────────────────────────
@@ -818,7 +937,14 @@ function returnToLobby() {
 
   document.getElementById('game').style.display = 'none';
   document.getElementById('gameOverBanner').style.display = 'none';
-  document.getElementById('lobby').style.display = 'flex';
+  if (inTournament) {
+    document.getElementById('tournamentRoom').style.display = 'flex';
+    if (lastTournamentState) {
+        renderTournamentState(lastTournamentState);
+    }
+  } else {
+    document.getElementById('lobby').style.display = 'flex';
+  }
 
   // Clear boards
   ['board1','board2','hold1','hold2','next1','next2'].forEach(id => {

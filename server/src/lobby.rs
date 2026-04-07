@@ -6,7 +6,7 @@ use std::fs;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
-use shared::ServerMsg;
+use shared::{ServerMsg, TournamentBracket};
 
 // ---------------------------------------------------------------------------
 // Ranking persistence
@@ -47,69 +47,7 @@ impl Rankings {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tournament bracket (single elimination, up to 8 players)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-pub struct TournamentBracket {
-    pub players: Vec<String>,
-    /// Pairs of players for current round matches.
-    pub matches: Vec<(String, String)>,
-    /// Winners of each match in the current round.
-    pub winners: Vec<String>,
-    pub round: u32,
-    pub champion: Option<String>,
-}
-
-impl TournamentBracket {
-    pub fn new(players: Vec<String>) -> Self {
-        let mut p = players;
-        // Pad to power of two (max 8).
-        let target = if p.len() <= 2 {
-            2
-        } else if p.len() <= 4 {
-            4
-        } else {
-            8
-        };
-        while p.len() < target {
-            p.push(format!("BYE_{}", p.len()));
-        }
-        let matches = Self::make_matches(&p);
-        Self {
-            players: p,
-            matches,
-            winners: Vec::new(),
-            round: 1,
-            champion: None,
-        }
-    }
-
-    fn make_matches(players: &[String]) -> Vec<(String, String)> {
-        players.chunks(2).map(|c| (c[0].clone(), c[1].clone())).collect()
-    }
-
-    /// Record the winner of a match. If it is a BYE match, the non-BYE player
-    /// advances automatically.
-    pub fn record_winner(&mut self, winner: String) {
-        self.winners.push(winner);
-        if self.winners.len() == self.matches.len() {
-            // Round complete.
-            if self.winners.len() == 1 {
-                self.champion = Some(self.winners[0].clone());
-            } else {
-                self.players = self.winners.drain(..).collect();
-                self.matches = Self::make_matches(&self.players);
-                self.round += 1;
-            }
-        }
-    }
-
-    pub fn current_matches(&self) -> &[(String, String)] {
-        &self.matches
-    }
-}
+// Old tournament bracket struct removed
 
 // ---------------------------------------------------------------------------
 // Connected player handle
@@ -136,6 +74,7 @@ pub struct Lobby {
     pub challenges: Vec<PendingChallenge>,
     pub rankings: Rankings,
     pub tournament: Option<TournamentBracket>,
+    pub tournament_queue: Vec<String>,
 }
 
 impl Lobby {
@@ -145,6 +84,7 @@ impl Lobby {
             challenges: Vec::new(),
             rankings: Rankings::load(),
             tournament: None,
+            tournament_queue: Vec::new(),
         }
     }
 
@@ -156,7 +96,9 @@ impl Lobby {
     pub fn remove_player(&mut self, name: &str) {
         self.players.remove(name);
         self.challenges.retain(|c| c.from != name && c.to != name);
+        self.tournament_queue.retain(|p| p != name);
         self.broadcast_lobby_state();
+        self.broadcast_tournament_state();
     }
 
     pub fn broadcast_lobby_state(&self) {
@@ -170,6 +112,17 @@ impl Lobby {
         for handle in self.players.values() {
             let _ = handle.tx.send(state_msg.clone());
             let _ = handle.tx.send(score_msg.clone());
+        }
+        self.broadcast_tournament_state();
+    }
+
+    pub fn broadcast_tournament_state(&self) {
+        let msg = ServerMsg::TournamentState {
+            queue: self.tournament_queue.clone(),
+            bracket: self.tournament.clone(),
+        };
+        for handle in self.players.values() {
+            let _ = handle.tx.send(msg.clone());
         }
     }
 
@@ -210,17 +163,64 @@ impl Lobby {
             .retain(|c| !(c.from == challenger && c.to == decliner));
     }
 
-    pub fn record_game_result(&mut self, winner: &str, loser: &str) {
+    pub fn record_game_result(&mut self, winner: &str, loser: &str) -> (bool, bool) {
         self.rankings.update(winner, loser);
         self.send_to(winner, ServerMsg::GameOver { winner: winner.to_string() });
         self.send_to(loser, ServerMsg::GameOver { winner: winner.to_string() });
+
+        let mut round_complete = false;
+        let mut tourney_finished = false;
+        if let Some(ref mut bracket) = self.tournament {
+            // Is this a tournament match?
+            let is_tourney = bracket.matches.iter().any(|(p1, p2)| {
+                (p1 == winner && p2 == loser) || (p1 == loser && p2 == winner)
+            });
+            if is_tourney {
+                let round_ended = bracket.record_winner(winner.to_string());
+                if round_ended && bracket.champion.is_none() {
+                    round_complete = true;
+                }
+                
+                if bracket.champion.is_some() {
+                    tourney_finished = true;
+                }
+            }
+        }
+        self.broadcast_tournament_state();
+        (round_complete, tourney_finished)
     }
 
-    pub fn start_tournament(&mut self, mut participants: Vec<String>) {
-        participants.retain(|p| self.players.contains_key(p));
-        if participants.len() < 2 {
-            return;
+    pub fn join_tournament(&mut self, player: &str) -> Result<(), String> {
+        if self.tournament.is_some() {
+            return Err("Tournament already in progress.".to_string());
         }
+        if !self.tournament_queue.contains(&player.to_string()) {
+            self.tournament_queue.push(player.to_string());
+            self.broadcast_tournament_state();
+        }
+        Ok(())
+    }
+
+    pub fn leave_tournament(&mut self, player: &str) {
+        self.tournament_queue.retain(|p| p != player);
+        self.broadcast_tournament_state();
+    }
+
+    pub fn start_tournament(&mut self) -> Result<(), String> {
+        if self.tournament.is_some() {
+            return Err("Tournament already running.".to_string());
+        }
+        let len = self.tournament_queue.len();
+        if len != 2 && len != 4 && len != 8 {
+            return Err("Tournament requires exactly 2, 4, or 8 players.".to_string());
+        }
+        
+        let mut participants = std::mem::take(&mut self.tournament_queue);
+        // Shuffle could happen here, but simplistic rotation or standard order is fine for deterministic tests.
+        // Actually letting them naturally pair up by queue order is standard!
+        
         self.tournament = Some(TournamentBracket::new(participants));
+        self.broadcast_tournament_state();
+        Ok(())
     }
 }

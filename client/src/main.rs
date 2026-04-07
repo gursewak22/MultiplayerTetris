@@ -119,6 +119,10 @@ async fn main() {
                 }
                 ServerMsg::GameOver { winner } => {
                     println!("[Game] Game over. Winner: {winner}");
+                    let _ = game_start_tx2.send(0); // Arbitrary unblock token
+                }
+                ServerMsg::TournamentState { .. } => {
+                    // Handled natively by Web UI.
                 }
             }
         }
