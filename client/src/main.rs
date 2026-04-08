@@ -90,7 +90,7 @@ async fn main() {
                 Err(_) => continue,
             };
             match msg {
-                ServerMsg::LobbyState { players } => {
+                ServerMsg::LobbyState { players, .. } => {
                     println!("[Lobby] Online: {}", players.join(", "));
                 }
                 ServerMsg::ChallengeReceived { from } => {

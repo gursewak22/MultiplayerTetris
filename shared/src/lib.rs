@@ -74,7 +74,7 @@ pub struct DrawFrame {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMsg {
-    LobbyState { players: Vec<String> },
+    LobbyState { players: Vec<String>, in_game: Vec<String> },
     ChallengeReceived { from: String },
     GameStart { session_id: u64 },
     GameOver { winner: String },

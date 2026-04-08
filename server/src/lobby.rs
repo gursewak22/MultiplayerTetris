@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 
 use serde::{Deserialize, Serialize};
@@ -75,6 +75,7 @@ pub struct Lobby {
     pub rankings: Rankings,
     pub tournament: Option<TournamentBracket>,
     pub tournament_queue: Vec<String>,
+    pub in_game: HashSet<String>,
 }
 
 impl Lobby {
@@ -85,7 +86,22 @@ impl Lobby {
             rankings: Rankings::load(),
             tournament: None,
             tournament_queue: Vec::new(),
+            in_game: HashSet::new(),
         }
+    }
+
+    pub fn mark_in_game(&mut self, p1: &str, p2: &str) {
+        self.in_game.insert(p1.to_string());
+        self.in_game.insert(p2.to_string());
+    }
+
+    pub fn mark_available(&mut self, p1: &str, p2: &str) {
+        self.in_game.remove(p1);
+        self.in_game.remove(p2);
+    }
+
+    pub fn is_in_game(&self, name: &str) -> bool {
+        self.in_game.contains(name)
     }
 
     pub fn add_player(&mut self, name: String, tx: mpsc::UnboundedSender<ServerMsg>) {
@@ -103,10 +119,11 @@ impl Lobby {
 
     pub fn broadcast_lobby_state(&self) {
         let player_list: Vec<String> = self.players.keys().cloned().collect();
+        let in_game_list: Vec<String> = self.in_game.iter().cloned().collect();
         let mut scores: Vec<(String, u32)> = self.rankings.scores.clone().into_iter().collect();
         scores.sort_by(|a, b| b.1.cmp(&a.1)); // Sort descending
 
-        let state_msg = ServerMsg::LobbyState { players: player_list };
+        let state_msg = ServerMsg::LobbyState { players: player_list, in_game: in_game_list };
         let score_msg = ServerMsg::Scoreboard { scores };
 
         for handle in self.players.values() {
@@ -133,6 +150,19 @@ impl Lobby {
     }
 
     pub fn handle_challenge(&mut self, from: &str, target: &str) {
+        // Block challenges involving players already in a match.
+        if self.in_game.contains(from) {
+            self.send_to(from, ServerMsg::ServerError {
+                msg: "You are already in a match.".to_string(),
+            });
+            return;
+        }
+        if self.in_game.contains(target) {
+            self.send_to(from, ServerMsg::ServerError {
+                msg: format!("{target} is already in a match."),
+            });
+            return;
+        }
         // Avoid duplicate challenges.
         let already = self.challenges.iter().any(|c| c.from == from && c.to == target);
         if already {

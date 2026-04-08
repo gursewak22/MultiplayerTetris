@@ -1,1 +1,1 @@
-C:\cygwin64\home\adity\MultiplayerTetris-main\target\debug\renderer.exe: C:\cygwin64\home\adity\MultiplayerTetris-main\renderer\index.html C:\cygwin64\home\adity\MultiplayerTetris-main\renderer\src\main.rs C:\cygwin64\home\adity\MultiplayerTetris-main\shared\src\lib.rs
+/Users/garry21/tetris/MultiplayerTetris/target/debug/renderer: /Users/garry21/tetris/MultiplayerTetris/renderer/index.html /Users/garry21/tetris/MultiplayerTetris/renderer/src/main.rs /Users/garry21/tetris/MultiplayerTetris/shared/src/lib.rs

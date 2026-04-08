@@ -664,7 +664,11 @@ function connectToServer() {
 function handleServerMsg(msg) {
   switch (msg.type) {
     case 'lobby_state':
-      renderPlayerList(msg.players);
+      renderPlayerList(msg.players, msg.in_game || []);
+      break;
+
+    case 'server_error':
+      setStatus('Error: ' + msg.msg);
       break;
 
     case 'scoreboard':
@@ -718,10 +722,9 @@ function handleServerMsg(msg) {
   }
 }
 
-function renderPlayerList(players) {
+function renderPlayerList(players, inGame) {
   const container = document.getElementById('playerRows');
   container.innerHTML = '';
-  const others = players.filter(p => p !== myName);
 
   if (players.length === 0) {
     container.innerHTML = '<span style="color:#555;font-size:0.85rem">No players online</span>';
@@ -733,29 +736,54 @@ function renderPlayerList(players) {
     row.className = 'playerRow';
 
     const nameSpan = document.createElement('span');
-    nameSpan.textContent = p === myName ? p + ' (you)' : p;
+    const isYou = p === myName;
+    const playing = inGame.includes(p);
+    nameSpan.textContent = isYou ? p + ' (you)' : p;
+
+    if (playing) {
+      const badge = document.createElement('span');
+      badge.textContent = ' ⚔ in match';
+      badge.style.color = '#ff6b6b';
+      badge.style.fontSize = '0.72rem';
+      badge.style.marginLeft = '6px';
+      nameSpan.appendChild(badge);
+    }
+
     row.appendChild(nameSpan);
 
-    if (p !== myName) {
-      const btn = document.createElement('button');
-      btn.textContent = 'CHALLENGE';
-      btn.style.fontSize = '0.7rem';
-      btn.style.padding = '4px 10px';
-      btn.addEventListener('click', () => {
-        sendServer({ type: 'challenge', target: p });
-        setStatus(`Challenge sent to ${p}…`);
-      });
-      row.appendChild(btn);
+    if (!isYou) {
+      if (playing) {
+        // In-match players: spectate only
+        const specBtn = document.createElement('button');
+        specBtn.textContent = 'SPECTATE';
+        specBtn.style.fontSize = '0.7rem';
+        specBtn.style.padding = '4px 10px';
+        specBtn.addEventListener('click', () => {
+          sendServer({ type: 'spectate', target: p });
+        });
+        row.appendChild(specBtn);
+      } else {
+        // Available players: challenge + spectate
+        const btn = document.createElement('button');
+        btn.textContent = 'CHALLENGE';
+        btn.style.fontSize = '0.7rem';
+        btn.style.padding = '4px 10px';
+        btn.addEventListener('click', () => {
+          sendServer({ type: 'challenge', target: p });
+          setStatus(`Challenge sent to ${p}…`);
+        });
+        row.appendChild(btn);
 
-      const specBtn = document.createElement('button');
-      specBtn.textContent = 'SPECTATE';
-      specBtn.style.fontSize = '0.7rem';
-      specBtn.style.padding = '4px 10px';
-      specBtn.style.marginLeft = '4px';
-      specBtn.addEventListener('click', () => {
-        sendServer({ type: 'spectate', target: p });
-      });
-      row.appendChild(specBtn);
+        const specBtn = document.createElement('button');
+        specBtn.textContent = 'SPECTATE';
+        specBtn.style.fontSize = '0.7rem';
+        specBtn.style.padding = '4px 10px';
+        specBtn.style.marginLeft = '4px';
+        specBtn.addEventListener('click', () => {
+          sendServer({ type: 'spectate', target: p });
+        });
+        row.appendChild(specBtn);
+      }
     }
 
     container.appendChild(row);

@@ -135,6 +135,7 @@ async fn tick_loop(
                     if let (Some(p1), Some(p2)) = (p1_name, p2_name) {
                         let winner = if loser_num == 1 { &p2 } else { &p1 };
                         let loser = if loser_num == 1 { &p1 } else { &p2 };
+                        lob.mark_available(winner, loser);
                         let (round_complete, tourney_finished) = lob.record_game_result(winner, loser);
                         
                         if round_complete {
@@ -357,31 +358,49 @@ async fn handle_client(
 
             ClientMsg::AcceptChallenge { from } => {
                 if let Some(ref name) = player_name {
-                    let accepted = {
-                        let mut lob = lobby.lock().await;
-                        lob.accept_challenge(name, &from)
-                    };
-                    if accepted {
-                        // Create a new game session.
-                        let new_session = GameSession::new();
-                        let id = {
-                            let mut sess_map = sessions.lock().await;
-                            let id = sess_map.len() as u64;
-                            sess_map.insert(id, new_session);
-                            id
-                        };
-                        // Acceptor is player 1, challenger is player 2.
-                        session_id = Some(id);
-                        player_number = 1;
-                        // Register both players so the challenger's task can look up its assignment.
-                        let mut assignments = game_assignments.lock().await;
-                        assignments.insert(name.clone(), (id, 1));
-                        assignments.insert(from.clone(), (id, 2));
+                    let mut lob = lobby.lock().await;
 
-                        // Notify both players that the game is starting, with their session ID.
-                        let lob = lobby.lock().await;
-                        lob.send_to(name, ServerMsg::GameStart { session_id: id });
-                        lob.send_to(&from, ServerMsg::GameStart { session_id: id });
+                    // Block if either player is already in a match.
+                    if lob.is_in_game(name) || lob.is_in_game(&from) {
+                        lob.send_to(name, ServerMsg::ServerError {
+                            msg: "One of the players is already in a match.".to_string(),
+                        });
+                        lob.send_to(&from, ServerMsg::ServerError {
+                            msg: format!("{name} is already in a match."),
+                        });
+                    } else {
+                        let accepted = lob.accept_challenge(name, &from);
+                        if accepted {
+                            // Clear all other pending challenges involving either player.
+                            lob.challenges.retain(|c| {
+                                c.from != *name && c.to != *name
+                                    && c.from != from && c.to != from
+                            });
+                            // Mark both as in-game immediately.
+                            lob.mark_in_game(name, &from);
+                            lob.broadcast_lobby_state();
+
+                            // Create a new game session.
+                            let new_session = GameSession::new();
+                            let id = {
+                                let mut sess_map = sessions.lock().await;
+                                let mut id = sess_map.len() as u64;
+                                while sess_map.contains_key(&id) { id += 1; }
+                                sess_map.insert(id, new_session);
+                                id
+                            };
+                            // Acceptor is player 1, challenger is player 2.
+                            session_id = Some(id);
+                            player_number = 1;
+                            // Register both players so the challenger's task can look up its assignment.
+                            let mut assignments = game_assignments.lock().await;
+                            assignments.insert(name.clone(), (id, 1));
+                            assignments.insert(from.clone(), (id, 2));
+
+                            // Notify both players that the game is starting.
+                            lob.send_to(name, ServerMsg::GameStart { session_id: id });
+                            lob.send_to(&from, ServerMsg::GameStart { session_id: id });
+                        }
                     }
                 }
             }
